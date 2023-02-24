@@ -1,15 +1,15 @@
 from pycocotools.coco import COCO
 import numpy as np
+import os
 import skimage.io as io
 import random
-import os
-from tensorflow.python.client import device_lib
 import tensorflow as tf
 from tensorflow import keras
 from keras.preprocessing import image
 from PIL import ImageOps
 from keras import layers
 from keras.models import load_model
+
 #from tensorflow.python.saved_model import loader_impl
 #from tensorflow.python.keras.saving.saved_model import load as saved_model_load
 import cv2
@@ -213,7 +213,7 @@ def get_model(img_size, num_classes):
     # Define the model
     model = keras.Model(inputs, outputs)
     return model
-def display_mask(i):
+def display_mask(i,prediction):
     """Quick utility to display a model's prediction."""
     mask = np.argmax(prediction[i], axis=-1)
     mask = np.expand_dims(mask, axis=-1)
@@ -238,52 +238,53 @@ class UpdatedMeanIoU(tf.keras.metrics.MeanIoU):
     y_pred = tf.math.argmax(y_pred, axis=-1)
     return super().update_state(y_true, y_pred, sample_weight)
 
-with tf.device("/gpu:0"):
-    folder = './Dataset'
-    classes = ['panel', 'home', 'bridge','background']
-    mode_val = 'val'
+
+
+
+def Inference(path,folder,image_size,batch_size,classes):
     mode_test = 'test'
+    model_infer = load_model(path, compile=False)
+    model_infer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
+    img_folder = '{}/images/{}'.format(folder, mode_test)
+    #train_img = getImage(images_test[0], img_folder, input_image_size)
+    train_img = io.imread(img_folder + '/' + 'frame8280.jpg') / 255.0
+    train_img = cv2.resize(train_img, image_size)
+    train_img = np.stack((train_img,) * 3, axis=-1)
+    img = np.zeros((batch_size, image_size[0], image_size[1], 3)).astype('float')
+    img[0] = train_img
+    plt.imshow(train_img)
+    plt.show()
+    prediction = model_infer.predict(img)
+    display_mask(0,prediction)
 
-    images_val, dataset_size_val, coco_val = filterDataset(folder, classes,  mode_val)
-    batch_size = 2
-    input_image_size = (512,512)
+def training(path,checkpoint_path, folder, input_image_size,batch_size,classes):
+    mode_train = 'train'
+    mode_val = 'val'
     mask_type = 'normal'
-
+    images_val, dataset_size_val, coco_val = filterDataset(folder, classes,  mode_val)
+    images_train, dataset_size_train, coco_train = filterDataset(folder, classes,  mode_train)
     val_gen = dataGeneratorCoco(images_val, classes, coco_val, folder,
                                 input_image_size, batch_size, mode_val, mask_type)
-
-    mode_train = 'train'
-    images_train, dataset_size_train, coco_train = filterDataset(folder, classes,  mode_train)
-
     train_gen = dataGeneratorCoco(images_train, classes, coco_train, folder,
                                 input_image_size, batch_size, mode_train, mask_type)
-
-    images_test, dataset_size_test, coco_test = filterDataset(folder, classes, mode_test)
-
-    test_gen = dataGeneratorCoco(images_test, classes, coco_test, folder,
-                                  input_image_size, batch_size, mode_test, mask_type)
-
-    #visualizeGenerator(train_gen,4)
-
-    checkpoint_path = "./unet_trained_multi_v4/model-{epoch:04d}.h5"
 
     callbacks = [
         keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', verbose=0, save_best_only=False,
                                         save_weights_only=False, mode='auto', period=1)
     ]
-    #loss = keras.losses.binary_crossentropy(from_logits=False)
-    #test = get_model(input_image_size,4)
+    train_model = load_model(path, compile=False)
+    train_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
 
-    test = load_model('./unet_trained_multi_v3/model-0014.h5', compile=False)
-    test.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
-    #test.fit(train_gen, epochs=20,steps_per_epoch=len(images_train)/batch_size,validation_data=val_gen,validation_steps=len(images_val)/batch_size,  callbacks=callbacks)
-    img_folder = '{}/images/{}'.format(folder, mode_test)
-    train_img = getImage(images_test[0], img_folder, input_image_size)
-    img = np.zeros((batch_size, input_image_size[0], input_image_size[1], 3)).astype('float')
-    img[0] = train_img
-    plt.imshow(train_img)
-    plt.show()
-    prediction = test.predict(img)
 
-    # check the keys of history object
-    display_mask(0)
+    train_model.fit(train_gen, epochs=20,steps_per_epoch=len(images_train)/batch_size,validation_data=val_gen,validation_steps=len(images_val)/batch_size,  callbacks=callbacks)
+
+
+
+
+with tf.device("/gpu:0"):
+    folder = './evalImages'
+    batch_size = 2
+    input_image_size = (512,512)
+    classes = ['panel', 'home', 'bridge','background']
+    checkpoint_path = "./unet_trained_final/model-{epoch:04d}.h5"
+    Inference('final_models/model-0050.h5', folder, input_image_size, batch_size, classes)
