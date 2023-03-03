@@ -256,7 +256,8 @@ def Inference(path,folder,image_size,batch_size,classes):
     plt.show()
     prediction = model_infer.predict(img)
     display_mask(0,prediction)
-
+print(tf.__version__)
+print(tf.config.list_physical_devices('GPU'))
 def training(path,checkpoint_path, folder, input_image_size,batch_size,classes):
     mode_train = 'train'
     mode_val = 'val'
@@ -282,9 +283,9 @@ def training(path,checkpoint_path, folder, input_image_size,batch_size,classes):
 
 
 with tf.device("/gpu:0"):
-    folder = './evalImages'
+    folder = './Dataset'
     batch_size = 2
     input_image_size = (512,512)
     classes = ['panel', 'home', 'bridge','background']
     checkpoint_path = "./unet_trained_final/model-{epoch:04d}.h5"
-    Inference('final_models/model-0050.h5', folder, input_image_size, batch_size, classes)
+    training('unet_trained_multi_v2/model-0060.h5', checkpoint_path, folder, input_image_size, batch_size, classes)

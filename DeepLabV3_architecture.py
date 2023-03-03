@@ -9,7 +9,13 @@ from keras.preprocessing import image
 from PIL import ImageOps
 from keras import layers
 from keras.models import load_model
-
+import datetime
+from keras.callbacks import CSVLogger
+from keras.layers import Input, Flatten, Dense, Reshape
+from keras.applications import MobileNetV2
+from keras_segmentation.models.unet import vgg_unet
+from keras.applications import mobilenet_v2
+from keras.applications.vgg16 import VGG16
 #from tensorflow.python.saved_model import loader_impl
 #from tensorflow.python.keras.saving.saved_model import load as saved_model_load
 import cv2
@@ -190,10 +196,12 @@ def Inference(path,folder,image_size,batch_size,classes):
     model_infer = load_model(path, compile=False)
     model_infer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
     img_folder = '{}/images/{}'.format(folder, mode_test)
-    #train_img = getImage(images_test[0], img_folder, input_image_size)
-    train_img = io.imread(img_folder + '/' + 'frame8280.jpg') / 255.0
+    images_test, dataset_size_test, coco_test = filterDataset(folder, classes, mode_test)
+
+    train_img = getImage(images_test[0], img_folder, input_image_size)
+    #train_img = io.imread(img_folder + '/' + 'frame8280.jpg') / 255.0
     train_img = cv2.resize(train_img, image_size)
-    train_img = np.stack((train_img,) * 3, axis=-1)
+    #train_img = np.stack((train_img,) * 3, axis=-1)
     img = np.zeros((batch_size, image_size[0], image_size[1], 3)).astype('float')
     img[0] = train_img
     plt.imshow(train_img)
@@ -238,6 +246,91 @@ def DilatedSpatialPyramidPooling(dspp_input):
     output = convolution_block(x, kernel_size=1)
     return output
 
+
+
+def vgg16(input_shape, num_classes):
+
+
+    model_input = keras.Input(shape=(input_shape, input_shape, 3))
+
+    # Define the input and output shapes
+    input_shape = (input_shape, input_shape, 3)
+    output_shape = (num_classes, input_shape, input_shape, 3)
+
+    # Load the VGG16 model with pre-trained ImageNet weights
+    vgg16 = VGG16(include_top=False, weights='imagenet', input_tensor=model_input)
+
+    # Freeze the convolutional layers
+    for layer in vgg16.layers:
+        layer.trainable = False
+
+    # Add a classification head to the VGG16 model
+    x = Flatten()(vgg16.output)
+    x = Dense(512, activation='relu')(x)
+    x = Dense(4 * 512 * 512 * 3, activation='softmax')(x)
+    x = Reshape(output_shape)(x)
+
+    # Create the model
+    model = keras.Model(inputs=vgg16.input, outputs=x)
+    return model
+
+def Unet(img_size, num_classes):
+    inputs = keras.Input(shape=img_size + (3,))
+
+    ### [First half of the network: downsampling inputs] ###
+
+    # Entry block
+    x = layers.Conv2D(32, 3, strides=2, padding="same")(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+
+    previous_block_activation = x  # Set aside residual
+
+    # Blocks 1, 2, 3 are identical apart from the feature depth.
+    for filters in [64, 128, 256]:
+        x = layers.Activation("relu")(x)
+        x = layers.SeparableConv2D(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.Activation("relu")(x)
+        x = layers.SeparableConv2D(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
+
+        # Project residual
+        residual = layers.Conv2D(filters, 1, strides=2, padding="same")(
+            previous_block_activation
+        )
+        x = layers.add([x, residual])  # Add back residual
+        previous_block_activation = x  # Set aside next residual
+
+    ### [Second half of the network: upsampling inputs] ###
+
+    for filters in [256, 128, 64, 32]:
+        x = layers.Activation("relu")(x)
+        x = layers.Conv2DTranspose(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.Activation("relu")(x)
+        x = layers.Conv2DTranspose(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.UpSampling2D(2)(x)
+
+        # Project residual
+        residual = layers.UpSampling2D(2)(previous_block_activation)
+        residual = layers.Conv2D(filters, 1, padding="same")(residual)
+        x = layers.add([x, residual])  # Add back residual
+        previous_block_activation = x  # Set aside next residual
+
+    # Add a per-pixel classification layer
+    outputs = layers.Conv2D(num_classes, 3, activation="softmax", padding="same")(x)
+
+    # Define the model
+    model = keras.Model(inputs, outputs)
+    return model
+
 def DeeplabV3Plus(image_size, num_classes):
     model_input = keras.Input(shape=(image_size, image_size, 3))
     resnet50 = keras.applications.ResNet50(
@@ -261,39 +354,73 @@ def DeeplabV3Plus(image_size, num_classes):
         interpolation="bilinear",
     )(x)
     model_output = layers.Conv2D(num_classes, kernel_size=(1, 1), padding="same")(x)
-    return keras.Model(inputs=model_input, outputs=model_output)
+    return keras.Model(inputs=resnet50.input, outputs=model_output)
 
-def training(path,checkpoint_path, folder, input_image_size,batch_size,classes,load):
-    mode_train = 'train'
-    mode_val = 'val'
-    mask_type = 'normal'
-    images_val, dataset_size_val, coco_val = filterDataset(folder, classes,  mode_val)
-    images_train, dataset_size_train, coco_train = filterDataset(folder, classes,  mode_train)
-    val_gen = dataGeneratorCoco(images_val, classes, coco_val, folder,
-                                input_image_size, batch_size, mode_val, mask_type)
-    train_gen = dataGeneratorCoco(images_train, classes, coco_train, folder,
-                                input_image_size, batch_size, mode_train, mask_type)
 
-    callbacks = [
-        keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', verbose=0, save_best_only=False,
-                                        save_weights_only=False, mode='auto', period=1)
-    ]
-    if load == True:
-        train_model = load_model(path, compile=False)
-    else :
-        train_model = DeeplabV3Plus(input_image_size[0], 4)
+with tf.device("/gpu:0"):
+    def training(arch, path,checkpoint_path, folder, input_image_size,batch_size,classes,load):
+        mode_train = 'train'
+        mode_val = 'val'
+        mask_type = 'normal'
+        images_val, dataset_size_val, coco_val = filterDataset(folder, classes,  mode_val)
+        images_train, dataset_size_train, coco_train = filterDataset(folder, classes,  mode_train)
+        val_gen = dataGeneratorCoco(images_val, classes, coco_val, folder,
+                                    input_image_size, batch_size, mode_val, mask_type)
+        train_gen = dataGeneratorCoco(images_train, classes, coco_train, folder,
+                                    input_image_size, batch_size, mode_train, mask_type)
+        csv_logger = CSVLogger(arch + "_" + datetime.now().strftime("%m_%d_%Y_%H_%M_%S") + ".log", separator=',', append=False)
 
-    train_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.00001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
-    train_model.fit(train_gen, epochs=20,steps_per_epoch=len(images_train)/batch_size,validation_data=val_gen,validation_steps=len(images_val)/batch_size,  callbacks=callbacks)
+        callbacks = [
+            keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', verbose=0, save_best_only=False,
+                                            save_weights_only=False, mode='auto', period=1),csv_logger
+        ]
 
+        if load == True:
+            train_model = load_model(path, compile=False)
+        else:
+            if arch == 'DeepLab':
+                train_model = DeeplabV3Plus(input_image_size[0], 4)
+            elif arch == 'MobileNet':
+                train_model = vgg16(input_image_size[0], 4)
+            elif arch == 'Unet':
+                train_model = Unet(input_image_size[0], 4)
+
+        train_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
+        history = train_model.fit(train_gen, epochs=60,steps_per_epoch=len(images_train)/batch_size,validation_data=val_gen,validation_steps=len(images_val)/batch_size,  callbacks=callbacks)
+        plt.plot(history.history["loss"])
+        plt.title("Training Loss")
+        plt.ylabel("loss")
+        plt.xlabel("epoch")
+        plt.show()
+
+        plt.plot(history.history["updated_mean_io_u"])
+        plt.title("Training Accuracy")
+        plt.ylabel("updated_mean_io_u")
+        plt.xlabel("epoch")
+        plt.show()
+
+        plt.plot(history.history["val_loss"])
+        plt.title("Validation Loss")
+        plt.ylabel("val_loss")
+        plt.xlabel("epoch")
+        plt.show()
+
+        plt.plot(history.history["val_updated_mean_io_u"])
+        plt.title("Validation Accuracy")
+        plt.ylabel("val_updated_mean_io_u")
+        plt.xlabel("epoch")
+        plt.show()
 
 
 
 with tf.device("/gpu:0"):
-    folder = './evalImages'
-    batch_size = 2
-    load = False;
+    folder = './Dataset'
+    batch_size = 4
+    load = False
+    arch = 'Unet'
     input_image_size = (512,512)
     classes = ['panel', 'home', 'bridge','background']
-    checkpoint_path = "./unet_trained_final/model-{epoch:04d}.h5"
-    Inference('final_models/model-0050.h5', folder, input_image_size, batch_size, classes)
+    checkpoint_path = "./deeplabv3/model-{epoch:04d}.h5"
+    #Inference('final_models/model-0050.h5', folder, input_image_size, batch_size, classes)
+
+    training(arch, "./deeplabv3/model-0001.h5",checkpoint_path,folder,input_image_size,batch_size,classes,False)
