@@ -18,6 +18,19 @@
     
 # Setup for Model training Optimization
   
-   # Step 2 - Installing all required libraries
+   # Step 1 - Installing all required libraries
     1. pip install matplotlib
-    2. 
+    2. pip install pycocotools
+    3. pip install tensorflow
+    4. pip install opencv-python
+    5. pip install PIL
+    6. pip install pickle
+
+   # Step 2 - Optimization
+    
+    1. Run training method with load variable as True with the desired trained model
+       path in checkpoint_path variable. 
+    
+# Setup for Model Onboard - Oak-d Lite inference
+
+    ~~~~~~~~~~~~Will add it soon

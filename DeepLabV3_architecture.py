@@ -5,6 +5,7 @@ import skimage.io as io
 import random
 import tensorflow as tf
 from tensorflow import keras
+import pickle
 from keras.preprocessing import image
 from PIL import ImageOps
 from keras import layers
@@ -206,6 +207,10 @@ def Inference(path,folder,image_size,batch_size,classes):
     img[0] = train_img
     plt.imshow(train_img)
     plt.show()
+    catIds = coco_test.getCatIds(catNms=classes)
+    train_mask = getNormalMask(images_test[0], classes, coco_test, catIds, input_image_size)
+    plt.imshow(train_mask)
+    plt.show()
     prediction = model_infer.predict(img)
     display_mask(0,prediction)
 
@@ -374,7 +379,7 @@ with tf.device("/gpu:0"):
             keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', verbose=0, save_best_only=False,
                                             save_weights_only=False, mode='auto', period=1),csv_logger
         ]
-
+        train_model = Unet(input_image_size, 4)
         if load == True:
             train_model = load_model(path, compile=False)
         else:
@@ -383,10 +388,13 @@ with tf.device("/gpu:0"):
             elif arch == 'MobileNet':
                 train_model = vgg16(input_image_size[0], 4)
             elif arch == 'Unet':
-                train_model = Unet(input_image_size[0], 4)
+                train_model = Unet(input_image_size, 4)
 
         train_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),loss="sparse_categorical_crossentropy",metrics=UpdatedMeanIoU(num_classes=4))
         history = train_model.fit(train_gen, epochs=60,steps_per_epoch=len(images_train)/batch_size,validation_data=val_gen,validation_steps=len(images_val)/batch_size,  callbacks=callbacks)
+
+
+
         plt.plot(history.history["loss"])
         plt.title("Training Loss")
         plt.ylabel("loss")
@@ -410,7 +418,8 @@ with tf.device("/gpu:0"):
         plt.ylabel("val_updated_mean_io_u")
         plt.xlabel("epoch")
         plt.show()
-
+        with open(arch + "_" + datetime.now().strftime("%m_%d_%Y_%H_%M_%S"), 'wb') as file_pi:
+            pickle.dump(history.history, file_pi)
 
 
 with tf.device("/gpu:0"):
@@ -418,9 +427,9 @@ with tf.device("/gpu:0"):
     batch_size = 4
     load = False
     arch = 'Unet'
-    input_image_size = (512,512)
+    input_image_size = (1024,1024)
     classes = ['panel', 'home', 'bridge','background']
-    checkpoint_path = "./deeplabv3/model-{epoch:04d}.h5"
-    #Inference('final_models/model-0050.h5', folder, input_image_size, batch_size, classes)
+    checkpoint_path = "./Unet_1024V2/model-{epoch:04d}.h5"
+    #Inference('./Unet16V3_256/model-0050.h5', folder, input_image_size, batch_size, classes)
 
-    training(arch, "./deeplabv3/model-0001.h5",checkpoint_path,folder,input_image_size,batch_size,classes,False)
+    training(arch, "./Unet_1024/model-0060.h5",checkpoint_path,folder,input_image_size,batch_size,classes,True)
